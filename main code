@@ -1,0 +1,231 @@
+#include <Wire.h>
+#include <Servo.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_INA219.h>
+
+// ========== OLED ==========
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define OLED_ADDRESS 0x3C
+
+Adafruit_SSD1306 display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  OLED_RESET
+);
+
+// ========== INA219 ==========
+Adafruit_INA219 ina219;
+
+// ========== SERVO PINS ==========
+const int H_SERVO_PIN = 9;
+const int V_SERVO_PIN = 10;
+
+Servo horizontalServo;
+Servo verticalServo;
+
+// ========== LDR PINS ==========
+const int TL = A0;
+const int TR = A1;
+const int BL = A2;
+const int BR = A3;
+
+// ========== SERVO SETTINGS ==========
+int horizontalAngle = 90;
+int verticalAngle = 90;
+
+const int MIN_ANGLE = 10;
+const int MAX_ANGLE = 170;
+
+const int STEP_SIZE = 1;
+const int TOLERANCE = 45;
+
+// Time between tracking corrections
+const unsigned long TRACK_INTERVAL = 100;
+
+// OLED refresh interval
+const unsigned long DISPLAY_INTERVAL = 500;
+
+unsigned long lastTrackTime = 0;
+unsigned long lastDisplayTime = 0;
+
+// ========== SETUP ==========
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+
+  // Initialize OLED
+  if (!display.begin(
+        SSD1306_SWITCHCAPVCC,
+        OLED_ADDRESS)) {
+    Serial.println("OLED initialization failed!");
+    while (true);
+  }
+
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1);
+  display.setCursor(0, 0);
+  display.println("DUAL AXIS TRACKER");
+  display.println();
+  display.println("Initializing...");
+  display.display();
+
+  // Initialize INA219
+  if (!ina219.begin()) {
+    Serial.println("INA219 not detected!");
+
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("INA219 ERROR");
+    display.println("Check I2C wiring");
+    display.display();
+
+    while (true);
+  }
+
+  // Initialize servos
+  horizontalServo.attach(H_SERVO_PIN);
+  verticalServo.attach(V_SERVO_PIN);
+
+  horizontalServo.write(horizontalAngle);
+  verticalServo.write(verticalAngle);
+
+  delay(1000);
+
+  Serial.println("Dual-axis tracker ready.");
+}
+
+// ========== MAIN LOOP ==========
+void loop() {
+
+  // Read all four LDRs
+  int lightTL = analogRead(TL);
+  int lightTR = analogRead(TR);
+  int lightBL = analogRead(BL);
+  int lightBR = analogRead(BR);
+
+  // Average light levels
+  int topAverage = (lightTL + lightTR) / 2;
+  int bottomAverage = (lightBL + lightBR) / 2;
+
+  int leftAverage = (lightTL + lightBL) / 2;
+  int rightAverage = (lightTR + lightBR) / 2;
+
+  // Differences between opposite sides
+  int horizontalDifference = leftAverage - rightAverage;
+  int verticalDifference = topAverage - bottomAverage;
+
+  // ========== SUN TRACKING ==========
+  if (millis() - lastTrackTime >= TRACK_INTERVAL) {
+
+    lastTrackTime = millis();
+
+    // Horizontal: left-right
+    if (horizontalDifference > TOLERANCE) {
+      horizontalAngle += STEP_SIZE;
+    }
+    else if (horizontalDifference < -TOLERANCE) {
+      horizontalAngle -= STEP_SIZE;
+    }
+
+    // Vertical: up-down
+    if (verticalDifference > TOLERANCE) {
+      verticalAngle += STEP_SIZE;
+    }
+    else if (verticalDifference < -TOLERANCE) {
+      verticalAngle -= STEP_SIZE;
+    }
+
+    // Apply mechanical angle limits
+    horizontalAngle = constrain(
+      horizontalAngle, MIN_ANGLE, MAX_ANGLE
+    );
+
+    verticalAngle = constrain(
+      verticalAngle, MIN_ANGLE, MAX_ANGLE
+    );
+
+    // Move the servos
+    horizontalServo.write(horizontalAngle);
+    verticalServo.write(verticalAngle);
+  }
+
+  // ========== INA219 MEASUREMENTS ==========
+  float busVoltage = ina219.getBusVoltage_V();
+  float shuntVoltage = ina219.getShuntVoltage_mV();
+
+  float current_mA = ina219.getCurrent_mA();
+
+  // Approximate voltage at INA219 VIN+
+  float panelVoltage =
+      busVoltage + (shuntVoltage / 1000.0);
+
+  // Power in milliwatts
+  float power_mW = panelVoltage * current_mA;
+
+  // ========== OLED DISPLAY ==========
+  if (millis() - lastDisplayTime >= DISPLAY_INTERVAL) {
+
+    lastDisplayTime = millis();
+
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+
+    display.println("DUAL SOLAR TRACKER");
+    display.println("---------------------");
+
+    display.print("Voltage: ");
+    display.print(panelVoltage, 2);
+    display.println(" V");
+
+    display.print("Current: ");
+    display.print(current_mA, 1);
+    display.println(" mA");
+
+    display.print("Power: ");
+    display.print(power_mW, 1);
+    display.println(" mW");
+
+    display.print("Horizontal: ");
+    display.print(horizontalAngle);
+    display.println(" deg");
+
+    display.print("Vertical: ");
+    display.print(verticalAngle);
+    display.println(" deg");
+
+    display.display();
+
+    // Serial Monitor output
+    Serial.print("LDRs: ");
+    Serial.print(lightTL);
+    Serial.print(", ");
+    Serial.print(lightTR);
+    Serial.print(", ");
+    Serial.print(lightBL);
+    Serial.print(", ");
+    Serial.print(lightBR);
+
+    Serial.print(" | Voltage: ");
+    Serial.print(panelVoltage, 2);
+
+    Serial.print(" V | Current: ");
+    Serial.print(current_mA, 1);
+
+    Serial.print(" mA | Power: ");
+    Serial.print(power_mW, 1);
+
+    Serial.print(" mW | H: ");
+    Serial.print(horizontalAngle);
+
+    Serial.print(" | V: ");
+    Serial.println(verticalAngle);
+  }
+
+  delay(10);
+}
